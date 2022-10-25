@@ -52,14 +52,15 @@ from util import LinearWarmupCosineDecay, loss_fn
 
 from network import CleanUNet
 
+from datetime import datetime
 
-def train(num_gpus, rank, group_name, 
+def train(num_gpus, rank, group_name,
           exp_path, log, optimization, loss_config):
-
+    torch.autograd.set_detect_anomaly(True)
     # setup local experiment path
     if rank == 0:
         print('exp_path:', exp_path)
-    
+
     # Create tensorboard logger.
     log_directory = os.path.join(log["directory"], exp_path)
     if rank == 0:
@@ -78,12 +79,12 @@ def train(num_gpus, rank, group_name,
         print("ckpt_directory: ", ckpt_directory, flush=True)
 
     # load training data
-    trainloader = load_CleanNoisyPairDataset(**trainset_config, 
+    trainloader, n_files = load_CleanNoisyPairDataset(**trainset_config,
                             subset='training',
-                            batch_size=optimization["batch_size_per_gpu"], 
+                            batch_size=optimization["batch_size_per_gpu"],
                             num_gpus=num_gpus)
     print('Data loaded')
-    
+
     # predefine model
     net = CleanUNet(**network_config).cuda()
     print_size(net)
@@ -104,32 +105,34 @@ def train(num_gpus, rank, group_name,
     if ckpt_iter >= 0:
         try:
             # load checkpoint file
+            print(os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter)))
             model_path = os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter))
             checkpoint = torch.load(model_path, map_location='cpu')
-            
+            print(optimizer)
             # feed model dict and optimizer state
             net.load_state_dict(checkpoint['model_state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            #optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
             # record training time based on elapsed time
-            time0 -= checkpoint['training_time_seconds']
-            print('Model at iteration %s has been trained for %s seconds' % (ckpt_iter, checkpoint['training_time_seconds']))
+            #time0 -= checkpoint['training_time_seconds']
+            #print('Model at iteration %s has been trained for %s seconds' % (ckpt_iter, checkpoint['training_time_seconds']))
             print('checkpoint model loaded successfully')
-        except:
+        except Exception as e:
+            print(e)
             ckpt_iter = -1
-            print('No valid checkpoint model found, start training from initialization.')
+            print('No valid checkpoint model found, start training from initialization inner if.')
     else:
         ckpt_iter = -1
-        print('No valid checkpoint model found, start training from initialization.')
+        print('No valid checkpoint model found, start training from initialization outer if.')
 
     # training
     n_iter = ckpt_iter + 1
-
+    n_total_iters = n_files * optimization['n_epochs']
     # define learning rate scheduler and stft-loss
     scheduler = LinearWarmupCosineDecay(
                     optimizer,
                     lr_max=optimization["learning_rate"],
-                    n_iter=optimization["n_iters"],
+                    n_iter=n_total_iters,
                     iteration=n_iter,
                     divider=25,
                     warmup_proportion=0.05,
@@ -141,10 +144,12 @@ def train(num_gpus, rank, group_name,
     else:
         mrstftloss = None
 
-    while n_iter < optimization["n_iters"] + 1:
+    n_epoch = 1
+
+    while n_epoch < optimization["n_epochs"] + 1:
         # for each epoch
-        for clean_audio, noisy_audio, _ in trainloader: 
-            
+        start_time = datetime.now()
+        for clean_audio, noisy_audio, _ in trainloader:
             clean_audio = clean_audio.cuda()
             noisy_audio = noisy_audio.cuda()
 
@@ -166,30 +171,26 @@ def train(num_gpus, rank, group_name,
             scheduler.step()
             optimizer.step()
 
-            # output to log
-            if n_iter % log["iters_per_valid"] == 0:
-                print("iteration: {} \treduced loss: {:.7f} \tloss: {:.7f}".format(
-                    n_iter, reduced_loss, loss.item()), flush=True)
-                
-                if rank == 0:
-                    # save to tensorboard
-                    tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
-                    tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
-                    tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
-                    tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
-
-            # save checkpoint
-            if n_iter > 0 and n_iter % log["iters_per_ckpt"] == 0 and rank == 0:
-                checkpoint_name = '{}.pkl'.format(n_iter)
-                torch.save({'iter': n_iter,
-                            'model_state_dict': net.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'training_time_seconds': int(time.time()-time0)}, 
-                            os.path.join(ckpt_directory, checkpoint_name))
-                print('model at iteration %s is saved' % n_iter)
-
+            if rank == 0:
+                # save to tensorboard
+                tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
+                tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
+                tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
+                tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
             n_iter += 1
-
+        print("Epoch: {} \treduced loss: {:.7f} \tloss: {:.7f}".format(
+                    n_epoch, reduced_loss, loss.item()), flush=True)
+        # save checkpoint
+        if n_epoch > 0 and n_epoch % log["epochs_per_ckpt"] == 0 and rank == 0:
+            checkpoint_name = '{}.pkl'.format(n_epoch)
+            print(os.path.join(ckpt_directory, checkpoint_name))
+            torch.save({'iter': n_iter,
+                        'model_state_dict': net.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'training_time_seconds': int(time.time()-time0)},
+                        os.path.join(ckpt_directory, checkpoint_name))
+            print('model at iteration %s in epoch %s is saved' % (n_iter,n_epoch))
+        n_epoch += 1
     # After training, close TensorBoard.
     if rank == 0:
         tb.close()
@@ -199,7 +200,7 @@ def train(num_gpus, rank, group_name,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='config.json', 
+    parser.add_argument('-c', '--config', type=str, default='config.json',
                         help='JSON file for configuration')
     parser.add_argument('-r', '--rank', type=int, default=0,
                         help='rank of process for distributed')
