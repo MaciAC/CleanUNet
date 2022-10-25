@@ -51,6 +51,7 @@ from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
 from network import CleanUNet
+from overlap_add import LambdaOverlapAdd
 
 from datetime import datetime
 
@@ -87,14 +88,23 @@ def train(num_gpus, rank, group_name,
 
     # predefine model
     net = CleanUNet(**network_config).cuda()
-    print_size(net)
+    continuous_net = LambdaOverlapAdd(
+             nnet=net,
+             n_src=1,
+             window_size=64000,
+             hop_size=None,
+             window="hanning",
+             reorder_chunks=True,
+             enable_grad=True,
+         ).cuda()
+    print_size(continuous_net)
 
     # apply gradient all reduce
     if num_gpus > 1:
-        net = apply_gradient_allreduce(net)
+        continuous_net = apply_gradient_allreduce(continuous_net)
 
     # define optimizer
-    optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
+    optimizer = torch.optim.Adam(continuous_net.parameters(), lr=optimization["learning_rate"])
 
     # load checkpoint
     time0 = time.time()
@@ -110,7 +120,7 @@ def train(num_gpus, rank, group_name,
             checkpoint = torch.load(model_path, map_location='cpu')
             print(optimizer)
             # feed model dict and optimizer state
-            net.load_state_dict(checkpoint['model_state_dict'])
+            continuous_net.load_state_dict(checkpoint['model_state_dict'])
             #optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
             # record training time based on elapsed time
@@ -161,13 +171,13 @@ def train(num_gpus, rank, group_name,
             # back-propagation
             optimizer.zero_grad()
             X = (clean_audio, noisy_audio)
-            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+            loss, loss_dic = loss_fn(continuous_net, X, **loss_config, mrstftloss=mrstftloss)
             if num_gpus > 1:
                 reduced_loss = reduce_tensor(loss.data, num_gpus).item()
             else:
                 reduced_loss = loss.item()
             loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
+            grad_norm = nn.utils.clip_grad_norm_(continuous_net.parameters(), 1e9)
             scheduler.step()
             optimizer.step()
 
@@ -185,7 +195,7 @@ def train(num_gpus, rank, group_name,
             checkpoint_name = '{}.pkl'.format(n_epoch)
             print(os.path.join(ckpt_directory, checkpoint_name))
             torch.save({'iter': n_iter,
-                        'model_state_dict': net.state_dict(),
+                        'model_state_dict': continuous_net.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'training_time_seconds': int(time.time()-time0)},
                         os.path.join(ckpt_directory, checkpoint_name))

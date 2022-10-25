@@ -49,6 +49,7 @@ from scipy.io.wavfile import read as wavread
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
 from network import CleanUNet
+from overlap_add import LambdaOverlapAdd
 
 
 def denoise(output_directory, ckpt_iter, subset, dump=False):
@@ -57,7 +58,7 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
 
     Parameters:
     output_directory (str):         save generated speeches to this path
-    ckpt_iter (int or 'max'):       the pretrained checkpoint to be loaded; 
+    ckpt_iter (int or 'max'):       the pretrained checkpoint to be loaded;
                                     automitically selects the maximum iteration if 'max' is selected
     subset (str):                   training, testing, validation
     dump (bool):                    whether save enhanced (denoised) audio
@@ -71,15 +72,24 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     loader_config = deepcopy(trainset_config)
     loader_config["crop_length_sec"] = 0
     dataloader, n_files = load_CleanNoisyPairDataset(
-        **loader_config, 
+        **loader_config,
         subset=subset,
-        batch_size=1, 
+        batch_size=1,
         num_gpus=1
     )
 
     # predefine model
     net = CleanUNet(**network_config).cuda()
-    print_size(net)
+    continuous_net = LambdaOverlapAdd(
+             nnet=net,
+             n_src=2,
+             window_size=64000,
+             hop_size=None,
+             window="hanning",
+             reorder_chunks=True,
+             enable_grad=False,
+         )
+    print_size(continuous_net)
 
     # load checkpoint
     ckpt_directory = os.path.join(train_config["log"]["directory"], exp_path, 'checkpoint')
@@ -89,12 +99,12 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
         ckpt_iter = int(ckpt_iter)
     model_path = os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter))
     checkpoint = torch.load(model_path, map_location='cpu')
-    net.load_state_dict(checkpoint['model_state_dict'])
-    net.eval()
+    continuous_net.load_state_dict(checkpoint['model_state_dict'])
+    continuous_net.eval()
 
     # get output directory ready
     if ckpt_iter == "pretrained":
-        speech_directory = os.path.join(output_directory, exp_path, 'speech', ckpt_iter) 
+        speech_directory = os.path.join(output_directory, exp_path, 'speech', ckpt_iter)
     else:
         speech_directory = os.path.join(output_directory, exp_path, 'speech', '{}k'.format(ckpt_iter//1000))
     if dump and not os.path.isdir(speech_directory):
@@ -112,10 +122,10 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
         noisy_audio = noisy_audio.cuda()
         LENGTH = len(noisy_audio[0].squeeze())
         generated_audio = sampling(net, noisy_audio)
-        
+
         if dump:
             print(os.path.join(speech_directory, 'enhanced_{}'.format(filename)))
-            wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
+            wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)),
                     trainset_config["sample_rate"],
                     generated_audio[0].squeeze().cpu().numpy())
         else:
@@ -130,7 +140,7 @@ if __name__ == "__main__":
     parser.add_argument('-c', '--config', type=str, default='config.json',
                         help='JSON file for configuration')
     parser.add_argument('-ckpt_iter', '--ckpt_iter', default='max',
-                        help='Which checkpoint to use; assign a number or "max" or "pretrained"')     
+                        help='Which checkpoint to use; assign a number or "max" or "pretrained"')
     parser.add_argument('-subset', '--subset', type=str, choices=['training', 'testing', 'validation'],
                         default='testing', help='subset for denoising')
     args = parser.parse_args()
@@ -155,4 +165,3 @@ if __name__ == "__main__":
                 subset=args.subset,
                 ckpt_iter=args.ckpt_iter,
                 dump=True)
-    
