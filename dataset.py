@@ -2,6 +2,7 @@
 #   Licensed under the MIT license.
 
 import os
+from re import I
 import numpy as np
 
 from scipy.io.wavfile import read as wavread
@@ -23,10 +24,10 @@ import torchaudio
 
 class CleanNoisyPairDataset(Dataset):
     """
-    Create a Dataset of clean and noisy audio pairs. 
+    Create a Dataset of clean and noisy audio pairs.
     Each element is a tuple of the form (clean waveform, noisy waveform, file_id)
     """
-    
+
     def __init__(self, root='./', subset='training', crop_length_sec=0):
         super(CleanNoisyPairDataset).__init__()
 
@@ -34,28 +35,31 @@ class CleanNoisyPairDataset(Dataset):
         self.crop_length_sec = crop_length_sec
         self.subset = subset
 
+        self.id_valid = []
+
         N_clean = len(os.listdir(os.path.join(root, 'training_set/clean')))
         N_noisy = len(os.listdir(os.path.join(root, 'training_set/noisy')))
         assert N_clean == N_noisy
+        self.n_files = N_clean
 
         if subset == "training":
             self.files = [(os.path.join(root, 'training_set/clean', 'fileid_{}.wav'.format(i)),
                            os.path.join(root, 'training_set/noisy', 'fileid_{}.wav'.format(i))) for i in range(N_clean)]
-        
+
         elif subset == "testing":
             sortkey = lambda name: '_'.join(name.split('_')[-2:])  # specific for dns due to test sample names
-            _p = os.path.join(root, 'datasets/test_set/synthetic/no_reverb')  # path for DNS
-            
+            _p = os.path.join(root, 'test_set')  # path for DNS
+
             clean_files = os.listdir(os.path.join(_p, 'clean'))
             noisy_files = os.listdir(os.path.join(_p, 'noisy'))
-            
+
             clean_files.sort(key=sortkey)
             noisy_files.sort(key=sortkey)
 
             self.files = []
             for _c, _n in zip(clean_files, noisy_files):
                 assert sortkey(_c) == sortkey(_n)
-                self.files.append((os.path.join(_p, 'clean', _c), 
+                self.files.append((os.path.join(_p, 'clean', _c),
                                    os.path.join(_p, 'noisy', _n)))
             self.crop_length_sec = 0
 
@@ -67,6 +71,10 @@ class CleanNoisyPairDataset(Dataset):
         clean_audio, sample_rate = torchaudio.load(fileid[0])
         noisy_audio, sample_rate = torchaudio.load(fileid[1])
         clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
+        if len(clean_audio) != len(noisy_audio):
+            n_len = len(clean_audio) if len(clean_audio) < len(noisy_audio) else len(noisy_audio)
+            clean_audio = clean_audio[:n_len]
+            noisy_audio = noisy_audio[:n_len]
         assert len(clean_audio) == len(noisy_audio)
 
         crop_length = int(self.crop_length_sec * sample_rate)
@@ -77,7 +85,7 @@ class CleanNoisyPairDataset(Dataset):
             start = np.random.randint(low=0, high=len(clean_audio) - crop_length + 1)
             clean_audio = clean_audio[start:(start + crop_length)]
             noisy_audio = noisy_audio[start:(start + crop_length)]
-        
+
         clean_audio, noisy_audio = clean_audio.unsqueeze(0), noisy_audio.unsqueeze(0)
         return (clean_audio, noisy_audio, fileid)
 
@@ -89,7 +97,7 @@ def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample
     """
     Get dataloader with distributed sampling
     """
-    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec)                                                       
+    dataset = CleanNoisyPairDataset(root=root, subset=subset, crop_length_sec=crop_length_sec)
     kwargs = {"batch_size": batch_size, "num_workers": 4, "pin_memory": False, "drop_last": False}
 
     if num_gpus > 1:
@@ -97,8 +105,8 @@ def load_CleanNoisyPairDataset(root, subset, crop_length_sec, batch_size, sample
         dataloader = torch.utils.data.DataLoader(dataset, sampler=train_sampler, **kwargs)
     else:
         dataloader = torch.utils.data.DataLoader(dataset, sampler=None, shuffle=True, **kwargs)
-        
-    return dataloader
+
+    return dataloader, dataset.n_files
 
 
 if __name__ == '__main__':
@@ -112,9 +120,8 @@ if __name__ == '__main__':
     testloader = load_CleanNoisyPairDataset(**trainset_config, subset='testing', batch_size=2, num_gpus=1)
     print(len(trainloader), len(testloader))
 
-    for clean_audio, noisy_audio, fileid in trainloader: 
+    for clean_audio, noisy_audio, fileid in trainloader:
         clean_audio = clean_audio.cuda()
         noisy_audio = noisy_audio.cuda()
         print(clean_audio.shape, noisy_audio.shape, fileid)
         break
-    
