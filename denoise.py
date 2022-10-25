@@ -70,7 +70,7 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     # load data
     loader_config = deepcopy(trainset_config)
     loader_config["crop_length_sec"] = 0
-    dataloader = load_CleanNoisyPairDataset(
+    dataloader, n_files = load_CleanNoisyPairDataset(
         **loader_config, 
         subset=subset,
         batch_size=1, 
@@ -114,6 +114,7 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
         generated_audio = sampling(net, noisy_audio)
         
         if dump:
+            print(os.path.join(speech_directory, 'enhanced_{}'.format(filename)))
             wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)), 
                     trainset_config["sample_rate"],
                     generated_audio[0].squeeze().cpu().numpy())

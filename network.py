@@ -1,6 +1,7 @@
 # Copyright (c) 2022 NVIDIA CORPORATION. 
 #   Licensed under the MIT license.
 
+from itertools import dropwhile
 import numpy as np
 
 import torch
@@ -81,7 +82,7 @@ class MultiHeadAttention(nn.Module):
         # Combine the last two dimensions to concatenate all the heads together: b x lq x (n*dv)
         q = q.transpose(1, 2).contiguous().view(sz_b, len_q, -1)
         q = self.dropout(self.fc(q))
-        q += residual
+        q = q + residual
 
         q = self.layer_norm(q)
 
@@ -104,7 +105,7 @@ class PositionwiseFeedForward(nn.Module):
 
         x = self.w_2(F.relu(self.w_1(x)))
         x = self.dropout(x)
-        x += residual
+        x = x + residual
 
         x = self.layer_norm(x)
 
@@ -195,7 +196,7 @@ class TransformerEncoder(nn.Module):
 
         for enc_layer in self.layer_stack:
             enc_output, enc_slf_attn = enc_layer(enc_output, slf_attn_mask=src_mask)
-            enc_slf_attn_list += [enc_slf_attn] if return_attns else []
+            enc_slf_attn_list = enc_slf_attn_list + [enc_slf_attn] if return_attns else []
 
         if return_attns:
             return enc_output, enc_slf_attn_list
@@ -229,11 +230,11 @@ class CleanUNet(nn.Module):
     def __init__(self, channels_input=1, channels_output=1,
                  channels_H=64, max_H=768,
                  encoder_n_layers=8, kernel_size=4, stride=2,
-                 tsfm_n_layers=3, 
+                 tsfm_n_layers=3,
                  tsfm_n_head=8,
-                 tsfm_d_model=512, 
+                 tsfm_d_model=512,
                  tsfm_d_inner=2048):
-        
+
         """
         Parameters:
         channels_input (int):   input channels
@@ -286,28 +287,28 @@ class CleanUNet(nn.Module):
                 ))
             else:
                 self.decoder.insert(0, nn.Sequential(
-                    nn.Conv1d(channels_H, channels_H * 2, 1), 
+                    nn.Conv1d(channels_H, channels_H * 2, 1),
                     nn.GLU(dim=1),
                     nn.ConvTranspose1d(channels_H, channels_output, kernel_size, stride),
                     nn.ReLU()
                 ))
             channels_output = channels_H
-            
+
             # double H but keep below max_H
             channels_H *= 2
             channels_H = min(channels_H, max_H)
-        
+
         # self attention block
         self.tsfm_conv1 = nn.Conv1d(channels_output, tsfm_d_model, kernel_size=1)
-        self.tsfm_encoder = TransformerEncoder(d_word_vec=tsfm_d_model, 
-                                               n_layers=tsfm_n_layers, 
-                                               n_head=tsfm_n_head, 
-                                               d_k=tsfm_d_model // tsfm_n_head, 
-                                               d_v=tsfm_d_model // tsfm_n_head, 
-                                               d_model=tsfm_d_model, 
-                                               d_inner=tsfm_d_inner, 
-                                               dropout=0.0, 
-                                               n_position=0, 
+        self.tsfm_encoder = TransformerEncoder(d_word_vec=tsfm_d_model,
+                                               n_layers=tsfm_n_layers,
+                                               n_head=tsfm_n_head,
+                                               d_k=tsfm_d_model // tsfm_n_head,
+                                               d_v=tsfm_d_model // tsfm_n_head,
+                                               d_model=tsfm_d_model,
+                                               d_inner=tsfm_d_inner,
+                                               dropout=0.0,
+                                               n_position=0,
                                                scale_emb=False)
         self.tsfm_conv2 = nn.Conv1d(tsfm_d_model, channels_output, kernel_size=1)
 
@@ -322,12 +323,12 @@ class CleanUNet(nn.Module):
             noisy_audio = noisy_audio.unsqueeze(1)
         B, C, L = noisy_audio.shape
         assert C == 1
-        
+
         # normalization and padding
         std = noisy_audio.std(dim=2, keepdim=True) + 1e-3
         noisy_audio /= std
         x = padding(noisy_audio, self.encoder_n_layers, self.kernel_size, self.stride)
-        
+
         # encoder
         skip_connections = []
         for downsampling_block in self.encoder:
@@ -348,7 +349,7 @@ class CleanUNet(nn.Module):
         # decoder
         for i, upsampling_block in enumerate(self.decoder):
             skip_i = skip_connections[i]
-            x += skip_i[:, :, :x.shape[-1]]
+            x = x + skip_i[:, :, :x.shape[-1]]
             x = upsampling_block(x)
 
         x = x[:, :, :L] * std
@@ -357,11 +358,11 @@ class CleanUNet(nn.Module):
 
 if __name__ == '__main__':
     import json
-    import argparse 
+    import argparse
     import os
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('-c', '--config', type=str, default='configs/DNS-large-full.json', 
+    parser.add_argument('-c', '--config', type=str, default='configs/DNS-large-full.json',
                         help='JSON file for configuration')
     args = parser.parse_args()
 
@@ -373,7 +374,7 @@ if __name__ == '__main__':
     model = CleanUNet(**network_config).cuda()
     from util import print_size
     print_size(model, keyword="tsfm")
-    
+
     input_data = torch.ones([4,1,int(4.5*16000)]).cuda()
     output = model(input_data)
     print(output.shape)
@@ -382,4 +383,3 @@ if __name__ == '__main__':
     loss = torch.nn.MSELoss()(y, output)
     loss.backward()
     print(loss.item())
-    
