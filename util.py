@@ -115,6 +115,7 @@ class LinearWarmupCosineDecay:
 
         phase1 = int(n_iter * warmup_proportion)
         phase2 = n_iter - phase1
+        print(phase1, phase2)
         lr_min = lr_max / divider
 
         phase_map = {'linear': anneal_linear, 'cosine': anneal_cosine}

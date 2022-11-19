@@ -51,7 +51,6 @@ from util import rescale, find_max_epoch, print_size
 from util import LinearWarmupCosineDecay, loss_fn
 
 from network import CleanUNet
-from overlap_add import LambdaOverlapAdd
 
 from datetime import datetime
 
@@ -80,31 +79,28 @@ def train(num_gpus, rank, group_name,
         print("ckpt_directory: ", ckpt_directory, flush=True)
 
     # load training data
+    batch_size_per_gpu = optimization["batch_size_per_gpu"]
     trainloader, n_files = load_CleanNoisyPairDataset(**trainset_config,
                             subset='training',
-                            batch_size=optimization["batch_size_per_gpu"],
+                            batch_size=batch_size_per_gpu,
+                            num_gpus=num_gpus)
+
+    validloader, n_files_valid = load_CleanNoisyPairDataset(**trainset_config,
+                            subset='validating',
+                            batch_size=batch_size_per_gpu,
                             num_gpus=num_gpus)
     print('Data loaded')
-
+    print(n_files)
     # predefine model
     net = CleanUNet(**network_config).cuda()
-    continuous_net = LambdaOverlapAdd(
-             nnet=net,
-             n_src=1,
-             window_size=64000,
-             hop_size=None,
-             window="hanning",
-             reorder_chunks=True,
-             enable_grad=True,
-         ).cuda()
-    print_size(continuous_net)
+    print_size(net)
 
     # apply gradient all reduce
     if num_gpus > 1:
-        continuous_net = apply_gradient_allreduce(continuous_net)
+        net = apply_gradient_allreduce(net)
 
     # define optimizer
-    optimizer = torch.optim.Adam(continuous_net.parameters(), lr=optimization["learning_rate"])
+    optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
 
     # load checkpoint
     time0 = time.time()
@@ -120,7 +116,7 @@ def train(num_gpus, rank, group_name,
             checkpoint = torch.load(model_path, map_location='cpu')
             print(optimizer)
             # feed model dict and optimizer state
-            continuous_net.load_state_dict(checkpoint['model_state_dict'])
+            net.load_state_dict(checkpoint['model_state_dict'])
             #optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
 
             # record training time based on elapsed time
@@ -137,7 +133,8 @@ def train(num_gpus, rank, group_name,
 
     # training
     n_iter = ckpt_iter + 1
-    n_total_iters = n_files * optimization['n_epochs']
+    n_total_iters = n_files * optimization['n_epochs'] / batch_size_per_gpu
+    print("Total iters", n_total_iters)
     # define learning rate scheduler and stft-loss
     scheduler = LinearWarmupCosineDecay(
                     optimizer,
@@ -145,7 +142,7 @@ def train(num_gpus, rank, group_name,
                     n_iter=n_total_iters,
                     iteration=n_iter,
                     divider=25,
-                    warmup_proportion=0.05,
+                    warmup_proportion=0.1,
                     phase=('linear', 'cosine'),
                 )
 
@@ -158,8 +155,8 @@ def train(num_gpus, rank, group_name,
 
     while n_epoch < optimization["n_epochs"] + 1:
         # for each epoch
-        start_time = datetime.now()
         for clean_audio, noisy_audio, _ in trainloader:
+            # each iteration pass batch_size_per_gpu number of samples to the gpu
             clean_audio = clean_audio.cuda()
             noisy_audio = noisy_audio.cuda()
 
@@ -171,31 +168,43 @@ def train(num_gpus, rank, group_name,
             # back-propagation
             optimizer.zero_grad()
             X = (clean_audio, noisy_audio)
-            loss, loss_dic = loss_fn(continuous_net, X, **loss_config, mrstftloss=mrstftloss)
-            if num_gpus > 1:
-                reduced_loss = reduce_tensor(loss.data, num_gpus).item()
-            else:
-                reduced_loss = loss.item()
+            loss, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+
             loss.backward()
-            grad_norm = nn.utils.clip_grad_norm_(continuous_net.parameters(), 1e9)
+            grad_norm = nn.utils.clip_grad_norm_(net.parameters(), 1e9)
             scheduler.step()
             optimizer.step()
 
             if rank == 0:
                 # save to tensorboard
                 tb.add_scalar("Train/Train-Loss", loss.item(), n_iter)
-                tb.add_scalar("Train/Train-Reduced-Loss", reduced_loss, n_iter)
                 tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
             n_iter += 1
-        print("Epoch: {} \treduced loss: {:.7f} \tloss: {:.7f}".format(
-                    n_epoch, reduced_loss, loss.item()), flush=True)
+        """
+        # validation per epoch
+        loss_valid = 0.0
+        i = 0
+        for clean_audio, noisy_audio, _ in validloader:
+            i+=1
+            clean_audio = clean_audio.cuda()
+            noisy_audio = noisy_audio.cuda()
+
+            X = (clean_audio, noisy_audio)
+            loss_valid_1, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
+            loss_valid += loss_valid_1
+
+        tb.add_scalar("Valid/Valid-Loss", loss_valid.item()/i, n_iter)
+        """
+
+        print("Epoch: {}\tTrain loss: {:.7f} \tValidation loss: {:.7f}".format(
+                    n_epoch, loss.item(), loss.item()), flush=True)
         # save checkpoint
         if n_epoch > 0 and n_epoch % log["epochs_per_ckpt"] == 0 and rank == 0:
             checkpoint_name = '{}.pkl'.format(n_epoch)
             print(os.path.join(ckpt_directory, checkpoint_name))
             torch.save({'iter': n_iter,
-                        'model_state_dict': continuous_net.state_dict(),
+                        'model_state_dict': net.state_dict(),
                         'optimizer_state_dict': optimizer.state_dict(),
                         'training_time_seconds': int(time.time()-time0)},
                         os.path.join(ckpt_directory, checkpoint_name))

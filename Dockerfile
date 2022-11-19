@@ -6,8 +6,10 @@ RUN pip3 install scipy
 #RUN pip install inflect==4.1.0
 RUN pip install scipy==1.5.0
 RUN pip install tqdm
-#RUN pip install pesq
-#RUN pip install pystoi
 RUN pip install asteroid
 
-#CMD python3 model/train.py
+RUN apt install libsndfile1 -y
+
+RUN pip install librosa
+RUN pip install soundfile
+RUN pip install numpy==1.20.3

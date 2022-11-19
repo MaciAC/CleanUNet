@@ -13,17 +13,17 @@
         "tsfm_d_inner": 2048
     },
     "train_config": {
-        "exp_path": "DNS-large-high",
+        "exp_path": "DNS-music-20k",
         "log":{
             "directory": "/exp",
             "ckpt_iter": "max",
-            "epochs_per_ckpt": 10,
-            "iters_per_valid": 500
+            "epochs_per_ckpt": 100,
+            "iters_per_valid": 1000
         },
         "optimization":{
-            "n_epochs": 100000,
-            "learning_rate": 2e-4,
-            "batch_size_per_gpu": 32
+            "n_epochs": 200,
+            "learning_rate": 1e-4,
+            "batch_size_per_gpu": 8
         },
         "loss_config":{
             "ell_p": 1,
@@ -41,8 +41,8 @@
     },
     "trainset_config": {
         "root": "/dataset",
-        "crop_length_sec": 1,
-        "sample_rate": 16000
+        "crop_length_sec": 10,
+        "sample_rate": 8000
     },
     "gen_config":{
         "output_directory": "./exp"

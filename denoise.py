@@ -80,7 +80,8 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
 
     # predefine model
     net = CleanUNet(**network_config).cuda()
-    continuous_net = LambdaOverlapAdd(
+    """
+    net = LambdaOverlapAdd(
              nnet=net,
              n_src=2,
              window_size=64000,
@@ -89,18 +90,20 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
              reorder_chunks=True,
              enable_grad=False,
          )
-    print_size(continuous_net)
+    """
+    print_size(net)
 
     # load checkpoint
     ckpt_directory = os.path.join(train_config["log"]["directory"], exp_path, 'checkpoint')
+    print(ckpt_directory)
     if ckpt_iter == 'max':
         ckpt_iter = find_max_epoch(ckpt_directory)
     if ckpt_iter != 'pretrained':
         ckpt_iter = int(ckpt_iter)
     model_path = os.path.join(ckpt_directory, '{}.pkl'.format(ckpt_iter))
     checkpoint = torch.load(model_path, map_location='cpu')
-    continuous_net.load_state_dict(checkpoint['model_state_dict'])
-    continuous_net.eval()
+    net.load_state_dict(checkpoint['model_state_dict'])
+    net.eval()
 
     # get output directory ready
     if ckpt_iter == "pretrained":
