@@ -1,1 +1,2 @@
-exp/*/checkpoint/*
+exp/*
+__pycache__
