@@ -181,7 +181,7 @@ def train(num_gpus, rank, group_name,
                 tb.add_scalar("Train/Gradient-Norm", grad_norm, n_iter)
                 tb.add_scalar("Train/learning-rate", optimizer.param_groups[0]["lr"], n_iter)
             n_iter += 1
-        """
+
         # validation per epoch
         loss_valid = 0.0
         i = 0
@@ -192,13 +192,12 @@ def train(num_gpus, rank, group_name,
 
             X = (clean_audio, noisy_audio)
             loss_valid_1, loss_dic = loss_fn(net, X, **loss_config, mrstftloss=mrstftloss)
-            loss_valid += loss_valid_1
-
-        tb.add_scalar("Valid/Valid-Loss", loss_valid.item()/i, n_iter)
-        """
+            loss_valid += loss_valid_1.item()
+        loss_valid /= i
+        tb.add_scalar("Valid/Valid-Loss", loss_valid, n_iter)
 
         print("Epoch: {}\tTrain loss: {:.7f} \tValidation loss: {:.7f}".format(
-                    n_epoch, loss.item(), loss.item()), flush=True)
+                    n_epoch, loss.item(), loss_valid), flush=True)
         # save checkpoint
         if n_epoch > 0 and n_epoch % log["epochs_per_ckpt"] == 0 and rank == 0:
             checkpoint_name = '{}.pkl'.format(n_epoch)
