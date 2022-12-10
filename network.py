@@ -307,7 +307,7 @@ class CleanUNet(nn.Module):
                                                d_v=tsfm_d_model // tsfm_n_head,
                                                d_model=tsfm_d_model,
                                                d_inner=tsfm_d_inner,
-                                               dropout=0.0,
+                                               dropout=0.3,
                                                n_position=0,
                                                scale_emb=False)
         self.tsfm_conv2 = nn.Conv1d(tsfm_d_model, channels_output, kernel_size=1)

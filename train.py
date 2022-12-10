@@ -100,7 +100,9 @@ def train(num_gpus, rank, group_name,
         net = apply_gradient_allreduce(net)
 
     # define optimizer
-    optimizer = torch.optim.Adam(net.parameters(), lr=optimization["learning_rate"])
+    optimizer = torch.optim.Adam(net.parameters(),
+                                 lr=optimization["learning_rate"],
+                                 weight_decay=optimization['momentum'])
 
     # load checkpoint
     time0 = time.time()
@@ -132,19 +134,27 @@ def train(num_gpus, rank, group_name,
         print('No valid checkpoint model found, start training from initialization outer if.')
 
     # training
-    n_iter = ckpt_iter + 1
-    n_total_iters = n_files * optimization['n_epochs'] / batch_size_per_gpu
+    n_iter =  1
+    n_total_iters = n_files * optimization['n_epochs'] // batch_size_per_gpu
     print("Total iters", n_total_iters)
     # define learning rate scheduler and stft-loss
     scheduler = LinearWarmupCosineDecay(
                     optimizer,
                     lr_max=optimization["learning_rate"],
                     n_iter=n_total_iters,
-                    iteration=n_iter,
+                    iteration=1,
                     divider=25,
-                    warmup_proportion=0.1,
+                    warmup_proportion=0.05,
                     phase=('linear', 'cosine'),
                 )
+    """
+    scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer,
+                                                  base_lr=optimization["learning_rate"]/100.0,
+                                                  max_lr=optimization["learning_rate"],
+                                                  step_size_up=1,
+                                                  step_size_down=3811,
+                                                  mode='triangular')
+    """
 
     if loss_config["stft_lambda"] > 0:
         mrstftloss = MultiResolutionSTFTLoss(**loss_config["stft_config"]).cuda()
@@ -200,7 +210,7 @@ def train(num_gpus, rank, group_name,
                     n_epoch, loss.item(), loss_valid), flush=True)
         # save checkpoint
         if n_epoch > 0 and n_epoch % log["epochs_per_ckpt"] == 0 and rank == 0:
-            checkpoint_name = '{}.pkl'.format(n_epoch)
+            checkpoint_name = '{}.pkl'.format(n_epoch+ckpt_iter)
             print(os.path.join(ckpt_directory, checkpoint_name))
             torch.save({'iter': n_iter,
                         'model_state_dict': net.state_dict(),

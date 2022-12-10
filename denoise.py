@@ -49,7 +49,6 @@ from scipy.io.wavfile import read as wavread
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
 from network import CleanUNet
-from overlap_add import LambdaOverlapAdd
 
 
 def denoise(output_directory, ckpt_iter, subset, dump=False):
@@ -94,7 +93,7 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     print_size(net)
 
     # load checkpoint
-    ckpt_directory = os.path.join(train_config["log"]["directory"], exp_path, 'checkpoint')
+    ckpt_directory = os.path.join(train_config["log"]["directory"], 'checkpoint')
     print(ckpt_directory)
     if ckpt_iter == 'max':
         ckpt_iter = find_max_epoch(ckpt_directory)
@@ -107,9 +106,9 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
 
     # get output directory ready
     if ckpt_iter == "pretrained":
-        speech_directory = os.path.join(output_directory, exp_path, 'speech', ckpt_iter)
+        speech_directory = os.path.join(output_directory, exp_path, 'denoised', ckpt_iter)
     else:
-        speech_directory = os.path.join(output_directory, exp_path, 'speech', '{}k'.format(ckpt_iter//1000))
+        speech_directory = os.path.join(output_directory, exp_path, 'denoised', '{}k'.format(ckpt_iter//1000))
     if dump and not os.path.isdir(speech_directory):
         os.makedirs(speech_directory)
         os.chmod(speech_directory, 0o775)
@@ -119,22 +118,22 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     all_generated_audio = []
     all_clean_audio = []
     sortkey = lambda name: '_'.join(name.split('/')[-1].split('_')[1:])
-    for clean_audio, noisy_audio, fileid in tqdm(dataloader):
-        filename = sortkey(fileid[0][0])
+    for noisy_audio, fileid in tqdm(dataloader):
+        filename = sortkey(fileid[0])
 
         noisy_audio = noisy_audio.cuda()
         LENGTH = len(noisy_audio[0].squeeze())
+        print(LENGTH)
         generated_audio = sampling(net, noisy_audio)
 
         if dump:
-            print(os.path.join(speech_directory, 'enhanced_{}'.format(filename)))
-            wavwrite(os.path.join(speech_directory, 'enhanced_{}'.format(filename)),
+            print(os.path.join(speech_directory, 'fileid_{}'.format(filename)))
+            wavwrite(os.path.join(speech_directory, 'fileid_{}'.format(filename)),
                     trainset_config["sample_rate"],
                     generated_audio[0].squeeze().cpu().numpy())
         else:
-            all_clean_audio.append(clean_audio[0].squeeze().cpu().numpy())
             all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
-
+        torch.cuda.empty_cache()
     return all_clean_audio, all_generated_audio
 
 

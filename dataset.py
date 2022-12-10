@@ -40,16 +40,18 @@ class CleanNoisyPairDataset(Dataset):
         path_noisy = "%s_set/noisy" % subset
         N_clean = len(os.listdir(os.path.join(root, path_clean)))
         N_noisy = len(os.listdir(os.path.join(root, path_noisy)))
-        assert N_clean == N_noisy
+        if subset != 'testing':
+            assert N_clean == N_noisy
         self.n_files = N_clean
 
         if subset in ["training", "validating"]:
             self.files = [(os.path.join(root, path_clean, 'fileid_{}.wav'.format(i)),
                            os.path.join(root, path_noisy, 'fileid_{}.wav'.format(i))) for i in range(N_clean)]
+            self.testing_set = False
 
         elif subset == "testing":
             sortkey = lambda name: '_'.join(name.split('_')[-2:])  # specific for dns due to test sample names
-            _p = os.path.join(root, 'test_set')  # path for DNS
+            _p = os.path.join(root, 'testing_set')  # path for DNS
 
             clean_files = os.listdir(os.path.join(_p, 'clean'))
             noisy_files = os.listdir(os.path.join(_p, 'noisy'))
@@ -58,37 +60,43 @@ class CleanNoisyPairDataset(Dataset):
             noisy_files.sort(key=sortkey)
 
             self.files = []
-            for _c, _n in zip(clean_files, noisy_files):
-                assert sortkey(_c) == sortkey(_n)
-                self.files.append((os.path.join(_p, 'clean', _c),
-                                   os.path.join(_p, 'noisy', _n)))
+            for _n in noisy_files:
+                self.files.append(os.path.join(_p, 'noisy', _n))
             self.crop_length_sec = 0
+            self.testing_set = True
 
         else:
             raise NotImplementedError
 
     def __getitem__(self, n):
         fileid = self.files[n]
-        clean_audio, sample_rate = torchaudio.load(fileid[0])
-        noisy_audio, sample_rate = torchaudio.load(fileid[1])
-        clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
-        if len(clean_audio) != len(noisy_audio):
-            n_len = len(clean_audio) if len(clean_audio) < len(noisy_audio) else len(noisy_audio)
-            clean_audio = clean_audio[:n_len]
-            noisy_audio = noisy_audio[:n_len]
-        assert len(clean_audio) == len(noisy_audio)
+        if self.testing_set:
+            noisy_audio, sample_rate = torchaudio.load(fileid)
+            noisy_audio = noisy_audio.squeeze(0)
+            return (noisy_audio, fileid)
 
-        crop_length = int(self.crop_length_sec * sample_rate)
-        assert crop_length < len(clean_audio)
+        else:
+            clean_audio, sample_rate = torchaudio.load(fileid[0])
+            noisy_audio, sample_rate = torchaudio.load(fileid[1])
+            clean_audio, noisy_audio = clean_audio.squeeze(0), noisy_audio.squeeze(0)
+            if len(clean_audio) != len(noisy_audio):
+                n_len = len(clean_audio) if len(clean_audio) < len(noisy_audio) else len(noisy_audio)
+                clean_audio = clean_audio[:n_len]
+                noisy_audio = noisy_audio[:n_len]
+            assert len(clean_audio) == len(noisy_audio)
 
-        # random crop
-        if self.subset != 'testing' and crop_length > 0:
-            start = np.random.randint(low=0, high=len(clean_audio) - crop_length + 1)
-            clean_audio = clean_audio[start:(start + crop_length)]
-            noisy_audio = noisy_audio[start:(start + crop_length)]
+            crop_length = int(self.crop_length_sec * sample_rate)
+            assert crop_length < len(clean_audio)
 
-        clean_audio, noisy_audio = clean_audio.unsqueeze(0), noisy_audio.unsqueeze(0)
-        return (clean_audio, noisy_audio, fileid)
+            # random crop
+            if self.subset != 'testing' and crop_length > 0:
+                start = np.random.randint(low=0, high=len(clean_audio) - crop_length + 1)
+                clean_audio = clean_audio[start:(start + crop_length)]
+                noisy_audio = noisy_audio[start:(start + crop_length)]
+
+            clean_audio, noisy_audio = clean_audio.unsqueeze(0), noisy_audio.unsqueeze(0)
+            return (clean_audio, noisy_audio, fileid)
+
 
     def __len__(self):
         return len(self.files)
