@@ -49,6 +49,7 @@ from scipy.io.wavfile import read as wavread
 from dataset import load_CleanNoisyPairDataset
 from util import rescale, find_max_epoch, print_size, sampling
 from network import CleanUNet
+from time import sleep
 
 
 def denoise(output_directory, ckpt_iter, subset, dump=False):
@@ -79,6 +80,8 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
 
     # predefine model
     net = CleanUNet(**network_config).cuda()
+    net_cpu = CleanUNet(**network_config)
+
     """
     net = LambdaOverlapAdd(
              nnet=net,
@@ -120,19 +123,24 @@ def denoise(output_directory, ckpt_iter, subset, dump=False):
     sortkey = lambda name: '_'.join(name.split('/')[-1].split('_')[1:])
     for noisy_audio, fileid in tqdm(dataloader):
         filename = sortkey(fileid[0])
-
-        noisy_audio = noisy_audio.cuda()
         LENGTH = len(noisy_audio[0].squeeze())
-        print(LENGTH)
-        generated_audio = sampling(net, noisy_audio)
-
+        print(LENGTH/8000 )
+        try:
+            generated_audio = sampling(net, noisy_audio.cuda())
+            out_audio = generated_audio[0].squeeze().cpu().numpy()
+        except RuntimeError as e:
+            print(e)
+            sleep(2)
+            generated_audio = sampling(net_cpu, noisy_audio)
+            out_audio = generated_audio[0].squeeze().numpy()
+        print(filename)
         if dump:
             print(os.path.join(speech_directory, 'fileid_{}'.format(filename)))
             wavwrite(os.path.join(speech_directory, 'fileid_{}'.format(filename)),
                     trainset_config["sample_rate"],
-                    generated_audio[0].squeeze().cpu().numpy())
+                    out_audio)
         else:
-            all_generated_audio.append(generated_audio[0].squeeze().cpu().numpy())
+            all_generated_audio.append(out_audio)
         torch.cuda.empty_cache()
     return all_clean_audio, all_generated_audio
 
